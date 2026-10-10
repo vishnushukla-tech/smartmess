@@ -3,19 +3,14 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Dict
 from datetime import datetime
-import zoneinfo
 
 app = FastAPI()
 
-# Default admin security pin for mess staff
-ADMIN_PIN = "1234"
+# Secured Admin Key
+ADMIN_PASSWORD = "smartmess_ugi.vs"
 
-# In-memory daily store: { "YYYY-MM-DD": { "RollNo": { ... } } }
-daily_records: Dict[str, Dict[str, dict]] = {}
-
-def get_current_date_ist() -> str:
-    tz = zoneinfo.ZoneInfo("Asia/Kolkata")
-    return datetime.now(tz).strftime("%Y-%m-%d")
+# Roll_no -> dict of meals
+daily_records: Dict[str, dict] = {}
 
 class MealSelection(BaseModel):
     roll_no: str
@@ -30,52 +25,42 @@ class AdminAction(BaseModel):
 
 @app.post("/api/submit")
 def submit_status(data: MealSelection):
-    today = get_current_date_ist()
-    if today not in daily_records:
-        daily_records[today] = {}
-        
-    daily_records[today][data.roll_no] = {
-        "name": data.name,
+    clean_roll = data.roll_no.strip().upper()
+    daily_records[clean_roll] = {
+        "name": data.name.strip(),
         "breakfast": data.breakfast,
         "lunch": data.lunch,
         "snacks": data.snacks,
-        "dinner": data.dinner
+        "dinner": data.dinner,
+        "timestamp": datetime.now().strftime("%I:%M %p")
     }
-    return {"message": "Attendance registered successfully", "date": today}
+    return {"message": "Attendance registered successfully", "total": len(daily_records)}
 
 @app.post("/api/summary")
-def get_summary(auth: AdminAction, date: str = None):
-    # Only verified admin PIN can read live kitchen aggregations
-    if auth.pin != ADMIN_PIN:
-        raise HTTPException(status_code=401, detail="Unauthorized Admin PIN")
-        
-    target_date = date or get_current_date_ist()
-    today_data = daily_records.get(target_date, {})
+def get_summary(auth: AdminAction):
+    if auth.pin != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Unauthorized Admin Password")
     
-    b_count = sum(1 for s in today_data.values() if s["breakfast"])
-    l_count = sum(1 for s in today_data.values() if s["lunch"])
-    s_count = sum(1 for s in today_data.values() if s["snacks"])
-    d_count = sum(1 for s in today_data.values() if s["dinner"])
+    b_count = sum(1 for s in daily_records.values() if s.get("breakfast"))
+    l_count = sum(1 for s in daily_records.values() if s.get("lunch"))
+    s_count = sum(1 for s in daily_records.values() if s.get("snacks"))
+    d_count = sum(1 for s in daily_records.values() if s.get("dinner"))
     
     return {
-        "date": target_date,
-        "total_responses": len(today_data),
+        "total_responses": len(daily_records),
         "breakfast": b_count,
         "lunch": l_count,
         "snacks": s_count,
         "dinner": d_count,
-        "student_list": today_data
+        "student_list": daily_records
     }
 
 @app.post("/api/reset-today")
 def reset_today(auth: AdminAction):
-    # Only verified admin PIN can clear daily records
-    if auth.pin != ADMIN_PIN:
-        raise HTTPException(status_code=401, detail="Unauthorized Admin PIN")
-        
-    today = get_current_date_ist()
-    daily_records[today] = {}
-    return {"message": f"Cleared records for {today}"}
+    if auth.pin != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Unauthorized Admin Password")
+    daily_records.clear()
+    return {"message": "All records cleared successfully"}
 
 @app.get("/", response_class=HTMLResponse)
 def index():
@@ -91,7 +76,7 @@ def index():
         body { margin: 0; background: #f8fafc; color: #1e293b; padding: 20px; }
         .container { max-width: 900px; margin: 0 auto; }
         header { text-align: center; margin-bottom: 25px; }
-        .date-badge { display: inline-block; background: #e2e8f0; color: #475569; padding: 4px 12px; border-radius: 999px; font-size: 13px; font-weight: 600; margin-top: 6px; }
+        .status-pill { display: inline-block; background: #e0f2fe; color: #0369a1; padding: 4px 12px; border-radius: 999px; font-size: 13px; font-weight: 600; }
         .tabs { display: flex; gap: 10px; justify-content: center; margin-bottom: 25px; }
         .tab-btn { padding: 10px 24px; border: none; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; background: #cbd5e1; color: #334155; }
         .tab-btn.active { background: #0284c7; color: white; }
@@ -111,8 +96,8 @@ def index():
         table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 14px; }
         th, td { border: 1px solid #e2e8f0; padding: 10px; text-align: left; }
         th { background: #f8fafc; color: #475569; }
-        .badge-in { color: #16a34a; font-weight: 600; }
-        .badge-out { color: #dc2626; font-weight: 600; }
+        .badge-in { color: #16a34a; font-weight: 700; background: #dcfce7; padding: 3px 8px; border-radius: 4px; }
+        .badge-out { color: #dc2626; font-weight: 700; background: #fee2e2; padding: 3px 8px; border-radius: 4px; }
         #status-msg { margin-top: 15px; text-align: center; font-weight: 600; }
         .admin-lock-card { text-align: center; padding: 40px 20px; }
       </style>
@@ -121,8 +106,8 @@ def index():
       <div class="container">
         <header>
           <h1 style="margin-bottom: 4px;">SmartMess</h1>
-          <p style="color: #64748b; margin: 0;">Automated Kitchen Headcount Platform</p>
-          <div class="date-badge" id="active-date">Portal Live</div>
+          <p style="color: #64748b; margin: 0 0 8px 0;">Automated Kitchen Headcount Platform</p>
+          <span class="status-pill" id="poll-indicator">● System Live</span>
         </header>
 
         <div class="tabs">
@@ -135,11 +120,11 @@ def index():
           <h2 style="margin-top:0;">Daily Meal Check-in</h2>
           <div class="form-group">
             <label>Full Name</label>
-            <input type="text" id="name" placeholder="e.g. John Doe" />
+            <input type="text" id="name" placeholder="e.g. Rahul Sharma" />
           </div>
           <div class="form-group">
             <label>Roll Number / Hostel ID</label>
-            <input type="text" id="roll" placeholder="e.g. CS2026-042" />
+            <input type="text" id="roll" placeholder="e.g. CS-101" />
           </div>
 
           <label>Select meals you plan to eat:</label>
@@ -150,32 +135,32 @@ def index():
             <label class="meal-card"><input type="checkbox" id="d" checked /> Dinner</label>
           </div>
 
-          <button class="submit-btn" onclick="submitAttendance()">Submit Attendance</button>
+          <button class="submit-btn" id="sub-btn" onclick="submitAttendance()">Submit Attendance</button>
           <div id="status-msg"></div>
         </div>
 
-        <!-- Kitchen Portal (Protected) -->
+        <!-- Kitchen Portal -->
         <div id="kitchen" class="panel">
-          <!-- PIN Prompt Screen -->
+          <!-- Password Lock -->
           <div id="admin-login" class="admin-lock-card">
-            <h3>🔒 Mess Admin Authorization Required</h3>
-            <p style="color: #64748b; font-size: 14px;">Enter the Mess Admin PIN to access kitchen counts</p>
-            <input type="password" id="admin-pin-input" placeholder="Enter PIN (Default: 1234)" style="max-width: 250px; text-align: center; margin-bottom: 12px;" />
+            <h3>🔒 Kitchen Admin Login</h3>
+            <p style="color: #64748b; font-size: 14px;">Enter Authorized Password to view live headcount</p>
+            <input type="password" id="admin-pin-input" placeholder="Enter Admin Password" style="max-width: 280px; text-align: center; margin-bottom: 12px;" />
             <br />
-            <button class="submit-btn" style="max-width: 250px;" onclick="unlockAdmin()">Unlock Display</button>
+            <button class="submit-btn" style="max-width: 280px;" onclick="unlockAdmin()">Unlock Display</button>
             <div id="login-err" style="color: #dc2626; margin-top: 10px; font-weight: 600;"></div>
           </div>
 
-          <!-- Protected Kitchen Content -->
+          <!-- Live Display -->
           <div id="admin-content" style="display: none;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
               <div>
-                <h2 style="margin:0;">Live Prep Counts</h2>
-                <small style="color: #64748b;" id="kitchen-date-label">Daily count register</small>
+                <h2 style="margin:0;">Live Kitchen Prep Count</h2>
+                <small style="color: #16a34a; font-weight:600;">● Auto-syncing live every 3s</small>
               </div>
               <div style="display:flex; gap:8px;">
                 <button onclick="loadKitchenData()" style="padding:6px 12px; border-radius:6px; cursor:pointer;">Refresh</button>
-                <button onclick="resetTodayData()" style="padding:6px 12px; border-radius:6px; cursor:pointer; background:#fee2e2; color:#b91c1c; border:1px solid #fecaca;">Clear Day</button>
+                <button onclick="resetTodayData()" style="padding:6px 12px; border-radius:6px; cursor:pointer; background:#fee2e2; color:#b91c1c; border:1px solid #fecaca;">Clear All</button>
                 <button onclick="lockAdmin()" style="padding:6px 12px; border-radius:6px; cursor:pointer; background:#f1f5f9;">Lock</button>
               </div>
             </div>
@@ -187,7 +172,7 @@ def index():
               <div class="stat-box"><h4>Dinner</h4><p id="cnt-d">0</p></div>
             </div>
 
-            <h3>Student Roster</h3>
+            <h3>Student Roster (<span id="total-students">0</span> responses)</h3>
             <table>
               <thead>
                 <tr>
@@ -197,10 +182,11 @@ def index():
                   <th>Lunch</th>
                   <th>Snacks</th>
                   <th>Dinner</th>
+                  <th>Time</th>
                 </tr>
               </thead>
               <tbody id="student-table-body">
-                <tr><td colspan="6" style="text-align:center;">No submissions recorded today.</td></tr>
+                <tr><td colspan="7" style="text-align:center;">No submissions recorded yet.</td></tr>
               </tbody>
             </table>
           </div>
@@ -208,7 +194,8 @@ def index():
       </div>
 
       <script>
-        let currentAdminPin = "";
+        let currentAdminPass = "";
+        let pollTimer = null;
 
         function switchTab(tabId) {
           document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -216,11 +203,13 @@ def index():
           if (tabId === 'student') {
             document.querySelectorAll('.tab-btn')[0].classList.add('active');
             document.getElementById('student').classList.add('active');
+            stopAutoRefresh();
           } else {
             document.querySelectorAll('.tab-btn')[1].classList.add('active');
             document.getElementById('kitchen').classList.add('active');
-            if (currentAdminPin) {
+            if (currentAdminPass) {
               loadKitchenData();
+              startAutoRefresh();
             }
           }
         }
@@ -229,12 +218,16 @@ def index():
           const name = document.getElementById('name').value.trim();
           const roll = document.getElementById('roll').value.trim();
           const msg = document.getElementById('status-msg');
+          const btn = document.getElementById('sub-btn');
 
           if (!name || !roll) {
             msg.innerText = "Please enter both Name and Roll Number.";
             msg.style.color = "#dc2626";
             return;
           }
+
+          btn.disabled = true;
+          btn.innerText = "Submitting...";
 
           const payload = {
             roll_no: roll,
@@ -251,105 +244,124 @@ def index():
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(payload)
             });
+
             if (res.ok) {
-              msg.innerText = "Attendance confirmed successfully!";
+              msg.innerText = "Attendance submitted successfully! The kitchen dashboard has updated.";
               msg.style.color = "#16a34a";
+            } else {
+              msg.innerText = "Server rejected the submission.";
+              msg.style.color = "#dc2626";
             }
           } catch(e) {
-            msg.innerText = "Network error. Please try again.";
+            msg.innerText = "Connection error. Please try again.";
             msg.style.color = "#dc2626";
+          } finally {
+            btn.disabled = false;
+            btn.innerText = "Submit Attendance";
           }
         }
 
         async function unlockAdmin() {
-          const pin = document.getElementById('admin-pin-input').value.trim();
+          const pass = document.getElementById('admin-pin-input').value.trim();
           const err = document.getElementById('login-err');
           
           try {
             const res = await fetch('/api/summary', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ pin: pin })
+              body: JSON.stringify({ pin: pass })
             });
 
             if (!res.ok) {
-              err.innerText = "Invalid PIN. Access denied.";
+              err.innerText = "Incorrect Password. Access denied.";
               return;
             }
 
             const data = await res.json();
-            currentAdminPin = pin;
+            currentAdminPass = pass;
             err.innerText = "";
             document.getElementById('admin-login').style.display = "none";
             document.getElementById('admin-content').style.display = "block";
             renderDashboard(data);
+            startAutoRefresh();
           } catch(e) {
-            err.innerText = "Error verifying PIN.";
+            err.innerText = "Network error connecting to backend.";
           }
         }
 
+        function startAutoRefresh() {
+          stopAutoRefresh();
+          pollTimer = setInterval(loadKitchenData, 3000);
+        }
+
+        function stopAutoRefresh() {
+          if (pollTimer) clearInterval(pollTimer);
+        }
+
         function lockAdmin() {
-          currentAdminPin = "";
+          stopAutoRefresh();
+          currentAdminPass = "";
           document.getElementById('admin-pin-input').value = "";
           document.getElementById('admin-login').style.display = "block";
           document.getElementById('admin-content').style.display = "none";
         }
 
         async function loadKitchenData() {
-          if (!currentAdminPin) return;
+          if (!currentAdminPass) return;
           try {
             const res = await fetch('/api/summary', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ pin: currentAdminPin })
+              body: JSON.stringify({ pin: currentAdminPass })
             });
             if (res.ok) {
               const data = await res.json();
               renderDashboard(data);
             }
           } catch(e) {
-            console.error(e);
+            console.error("Auto-sync error", e);
           }
         }
 
         function renderDashboard(data) {
-          document.getElementById('kitchen-date-label').innerText = "Live Date: " + data.date;
           document.getElementById('cnt-b').innerText = data.breakfast;
           document.getElementById('cnt-l').innerText = data.lunch;
           document.getElementById('cnt-s').innerText = data.snacks;
           document.getElementById('cnt-d').innerText = data.dinner;
+          document.getElementById('total-students').innerText = data.total_responses;
 
           const tbody = document.getElementById('student-table-body');
-          tbody.innerHTML = '';
           const students = Object.entries(data.student_list);
 
           if (students.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;">No submissions recorded today.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;">No submissions recorded yet.</td></tr>';
             return;
           }
 
+          tbody.innerHTML = '';
           students.forEach(([roll, info]) => {
             const row = document.createElement('tr');
             row.innerHTML = `
-              <td>${roll}</td>
+              <td><strong>${roll}</strong></td>
               <td>${info.name}</td>
-              <td class="${info.breakfast ? 'badge-in' : 'badge-out'}">${info.breakfast ? 'IN' : 'OUT'}</td>
-              <td class="${info.lunch ? 'badge-in' : 'badge-out'}">${info.lunch ? 'IN' : 'OUT'}</td>
-              <td class="${info.snacks ? 'badge-in' : 'badge-out'}">${info.snacks ? 'IN' : 'OUT'}</td>
-              <td class="${info.dinner ? 'badge-in' : 'badge-out'}">${info.dinner ? 'IN' : 'OUT'}</td>
+              <td><span class="${info.breakfast ? 'badge-in' : 'badge-out'}">${info.breakfast ? 'IN' : 'OUT'}</span></td>
+              <td><span class="${info.lunch ? 'badge-in' : 'badge-out'}">${info.lunch ? 'IN' : 'OUT'}</span></td>
+              <td><span class="${info.snacks ? 'badge-in' : 'badge-out'}">${info.snacks ? 'IN' : 'OUT'}</span></td>
+              <td><span class="${info.dinner ? 'badge-in' : 'badge-out'}">${info.dinner ? 'IN' : 'OUT'}</span></td>
+              <td style="color:#64748b; font-size:12px;">${info.timestamp || ''}</td>
             `;
             tbody.appendChild(row);
           });
         }
 
         async function resetTodayData() {
-          if (!currentAdminPin) return;
-          if (!confirm("Are you sure you want to clear all counts for today?")) return;
+          if (!currentAdminPass) return;
+          if (!confirm("Are you sure you want to clear all records?")) return;
 
           const res = await fetch('/api/reset-today', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ pin: currentAdminPin })
+            body: JSON.stringify({ pin: currentAdminPass })
           });
 
           if (res.ok) {
